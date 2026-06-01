@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>気圧予報</title>
+<!-- iOS ホーム画面に追加したときの設定 -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="気圧予報">
+<meta name="theme-color" content="#0d1117">
+<!-- ホーム画面アイコン（SVGを埋め込み。気圧計をイメージ） -->
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180' viewBox='0 0 180 180'%3E%3Crect width='180' height='180' rx='40' fill='%230d1117'/%3E%3Ccircle cx='90' cy='90' r='52' fill='none' stroke='%232a3340' stroke-width='8'/%3E%3Cpath d='M90 90 L120 64' stroke='%234cc9f0' stroke-width='7' stroke-linecap='round'/%3E%3Ccircle cx='90' cy='90' r='8' fill='%234cc9f0'/%3E%3C/svg%3E">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&family=Noto+Sans+JP:wght@400;500;700&display=swap');
+
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --panel-2: #1c232d;
+    --line: #2a3340;
+    --ink: #e6edf3;
+    --ink-dim: #8b98a8;
+    --accent: #4cc9f0;
+    --warn: #ff6b6b;
+    --warn-bg: rgba(255,107,107,0.08);
+    --ok: #4ade80;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    background-image: radial-gradient(circle at 20% 0%, rgba(76,201,240,0.06), transparent 40%),
+                      radial-gradient(circle at 90% 100%, rgba(76,201,240,0.04), transparent 40%);
+    color: var(--ink);
+    font-family: 'Noto Sans JP', sans-serif;
+    min-height: 100vh;
+    padding: max(24px, env(safe-area-inset-top)) 16px calc(60px + env(safe-area-inset-bottom));
+  }
+
+  .wrap { max-width: 860px; margin: 0 auto; }
+
+  header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+  h1 {
+    font-family: 'Outfit', sans-serif;
+    font-weight: 700;
+    font-size: 1.6rem;
+    letter-spacing: 0.02em;
+  }
+  h1 .loc { color: var(--accent); }
+  .sub { color: var(--ink-dim); font-size: 0.82rem; }
+
+  .updated { color: var(--ink-dim); font-size: 0.78rem; margin-bottom: 20px; }
+
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 16px 18px;
+  }
+  .card .label { color: var(--ink-dim); font-size: 0.74rem; letter-spacing: 0.04em; }
+  .card .value {
+    font-family: 'Outfit', sans-serif;
+    font-weight: 600;
+    font-size: 1.7rem;
+    margin-top: 4px;
+  }
+  .card .value small { font-size: 0.9rem; color: var(--ink-dim); font-weight: 400; }
+  .card .trend { font-size: 0.8rem; margin-top: 2px; }
+  .trend.down { color: var(--warn); }
+  .trend.up { color: var(--ok); }
+  .trend.flat { color: var(--ink-dim); }
+
+  .alerts { margin-bottom: 20px; }
+  .alert {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    background: var(--warn-bg);
+    border: 1px solid rgba(255,107,107,0.3);
+    border-left: 3px solid var(--warn);
+    border-radius: 10px;
+    padding: 12px 14px;
+    margin-bottom: 8px;
+    font-size: 0.86rem;
+  }
+  .alert .ic { color: var(--warn); font-weight: 700; }
+  .alert .t { color: var(--ink); }
+  .alert .t b { color: var(--warn); }
+  .no-alert {
+    display: flex; gap: 10px; align-items: center;
+    background: rgba(74,222,128,0.06);
+    border: 1px solid rgba(74,222,128,0.25);
+    border-radius: 10px;
+    padding: 12px 14px;
+    font-size: 0.86rem;
+    color: var(--ink-dim);
+  }
+  .no-alert .ic { color: var(--ok); }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 18px;
+    margin-bottom: 18px;
+  }
+  .panel h2 {
+    font-family: 'Outfit', sans-serif;
+    font-size: 0.95rem;
+    font-weight: 600;
+    margin-bottom: 14px;
+    color: var(--ink);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .panel h2 .legend { font-size: 0.72rem; color: var(--ink-dim); font-family: 'Noto Sans JP'; font-weight: 400; }
+
+  #chartOuter { position: relative; width: 100%; }
+  #yAxisFixed { position: absolute; left: 0; top: 0; z-index: 3; pointer-events: none; }
+  #chartScroll { position: relative; width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; touch-action: pan-x; }
+  #chartScroll svg, #yAxisFixed { height: 320px; }
+  #yAxisFixed { width: 48px; }
+  svg { display: block; }
+  .gridline { stroke: var(--line); stroke-width: 1; }
+  .axis-label { fill: var(--ink-dim); font-size: 11px; font-family: 'Outfit'; }
+  .day-label { fill: var(--ink); font-size: 12px; font-family: 'Outfit'; font-weight: 600; }
+  .pressure-line { fill: none; stroke: var(--accent); stroke-width: 2; }
+  .pressure-area { fill: url(#grad); }
+  .drop-marker { fill: var(--warn); }
+  .hover-dot { fill: var(--accent); stroke: var(--bg); stroke-width: 2; }
+
+  .tooltip {
+    position: absolute;
+    pointer-events: none;
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 6px 10px;
+    font-size: 0.78rem;
+    white-space: nowrap;
+    opacity: 0;
+    transition: opacity 0.1s;
+    transform: translate(-50%, -120%);
+    z-index: 5;
+  }
+  .tooltip .tp { font-family: 'Outfit'; font-weight: 600; color: var(--accent); }
+
+  .state { text-align: center; padding: 40px; color: var(--ink-dim); }
+  .footer { color: var(--ink-dim); font-size: 0.72rem; text-align: center; margin-top: 24px; line-height: 1.6; }
+  .footer a { color: var(--ink-dim); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>気圧予報 <span class="loc">東京</span></h1>
+    <span class="sub">海面更正気圧 / 1時間ごと / 7日先まで</span>
+  </header>
+  <div class="updated" id="updated">読み込み中…</div>
+
+  <div id="content">
+    <div class="state">気圧データを取得しています…</div>
+  </div>
+
+  <div class="footer">
+    データ提供: <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo.com</a>（CC BY 4.0）<br>
+    気圧低下の警告は、6時間で約3hPa以上・24時間で約8hPa以上の低下を目安に表示します。
+  </div>
+</div>
+</div>
+
+<script>
+const LAT = 35.68, LON = 139.69;
+// 複数エンドポイントを順に試す（1つ目がダメでも2つ目で取得できる場合がある）
+const ENDPOINTS = [
+  `https://api.open-meteo.com/v1/forecast?latitude=${LAT}&longitude=${LON}&hourly=pressure_msl&timezone=Asia%2FTokyo&forecast_days=7`,
+  `https://api.open-meteo.com/v1/gfs?latitude=${LAT}&longitude=${LON}&hourly=pressure_msl&timezone=Asia%2FTokyo&forecast_days=7`
+];
+
+const fmtTime = iso => {
+  const d = new Date(iso);
+  return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:00`;
+};
+
+async function load() {
+  const errors = [];
+  for (const url of ENDPOINTS) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status} ${res.statusText}${body ? ' / ' + body.slice(0,120) : ''}`);
+      }
+      const data = await res.json();
+      if (!data.hourly || !data.hourly.pressure_msl) throw new Error('レスポンスに気圧データが含まれていません');
+      render(data);
+      return;
+    } catch (e) {
+      errors.push(`${url.split('?')[0]} → ${e.name}: ${e.message}`);
+    }
+  }
+  // すべて失敗
+  const isTypeErr = errors.some(e => e.includes('TypeError') || e.includes('Failed to fetch') || e.includes('NetworkError'));
+  document.getElementById('content').innerHTML =
+    `<div class="state" style="text-align:left">
+      <p style="margin-bottom:12px;color:var(--warn);font-weight:700">データの取得に失敗しました</p>
+      ${isTypeErr ? `<p style="margin-bottom:12px">通信自体がブロックされている可能性が高いです。考えられる原因:</p>
+      <ul style="margin:0 0 12px 20px;line-height:1.8">
+        <li>ファイルを <code>file://</code> で直接開いている（一部ブラウザで通信が制限されます）→ 後述の方法で開いてください</li>
+        <li>広告ブロッカー・ブラウザ拡張・社内プロキシが <code>api.open-meteo.com</code> を遮断している</li>
+        <li>ネットワークがオフライン</li>
+      </ul>
+      <p style="margin-bottom:6px;font-weight:600">file:// 対策（ローカルサーバで開く）:</p>
+      <pre style="background:var(--panel-2);padding:10px;border-radius:8px;overflow-x:auto;font-size:0.78rem">cd フォルダ
+python3 -m http.server 8000
+# ブラウザで http://localhost:8000/pressure.html を開く</pre>` : ''}
+      <details style="margin-top:14px"><summary style="cursor:pointer;color:var(--ink-dim)">技術的な詳細</summary>
+        <pre style="background:var(--panel-2);padding:10px;border-radius:8px;overflow-x:auto;font-size:0.74rem;margin-top:8px;white-space:pre-wrap">${errors.join('\n\n')}</pre>
+      </details>
+    </div>`;
+  document.getElementById('updated').textContent = '';
+}
+
+function detectDrops(times, vals) {
+  // 6時間で3hPa以上、または24時間で8hPa以上の低下を検出
+  const alerts = [];
+  for (let i = 0; i < vals.length; i++) {
+    if (i >= 6) {
+      const d6 = vals[i-6] - vals[i];
+      if (d6 >= 3) alerts.push({ idx: i, type: '6h', drop: d6, time: times[i] });
+    }
+  }
+  // 連続検出をまとめる（区間化）
+  const merged = [];
+  for (const a of alerts) {
+    const last = merged[merged.length-1];
+    if (last && a.idx - last.endIdx <= 3) {
+      last.endIdx = a.idx; last.endTime = a.time;
+      last.maxDrop = Math.max(last.maxDrop, a.drop);
+    } else {
+      merged.push({ startIdx: a.idx, endIdx: a.idx, startTime: a.time, endTime: a.time, maxDrop: a.drop });
+    }
+  }
+  return merged;
+}
+
+function render(data) {
+  const times = data.hourly.time;
+  const vals = data.hourly.pressure_msl;
+  const unit = data.hourly_units.pressure_msl;
+
+  document.getElementById('updated').textContent =
+    `最終取得: ${fmtTime(new Date().toISOString())}（予報期間 ${fmtTime(times[0])} 〜 ${fmtTime(times[times.length-1])}）`;
+
+  const cur = vals[0];
+  const next6 = vals[6] != null ? vals[6] - cur : 0;
+  const next24 = vals[24] != null ? vals[24] - cur : 0;
+  const min = Math.min(...vals), max = Math.max(...vals);
+
+  const trendTxt = (d) => {
+    if (d <= -1) return `<span class="trend down">▼ ${d.toFixed(1)} ${unit}</span>`;
+    if (d >= 1) return `<span class="trend up">▲ +${d.toFixed(1)} ${unit}</span>`;
+    return `<span class="trend flat">→ 横ばい</span>`;
+  };
+
+  const drops = detectDrops(times, vals);
+
+  let alertHtml = '<div class="alerts">';
+  if (drops.length === 0) {
+    alertHtml += `<div class="no-alert"><span class="ic">✓</span><span>今後7日間で、急な気圧低下は予測されていません。</span></div>`;
+  } else {
+    for (const d of drops) {
+      alertHtml += `<div class="alert"><span class="ic">⚠</span><span class="t">
+        <b>${fmtTime(d.startTime)}頃〜</b> にかけて気圧が低下傾向（最大 約<b>${d.maxDrop.toFixed(1)} ${unit}/6h</b>）。
+        体調の変化に注意してください。</span></div>`;
+    }
+  }
+  alertHtml += '</div>';
+
+  const cards = `
+    <div class="cards">
+      <div class="card"><div class="label">現在の気圧</div>
+        <div class="value">${cur.toFixed(1)} <small>${unit}</small></div></div>
+      <div class="card"><div class="label">6時間後</div>
+        <div class="value">${vals[6].toFixed(1)} <small>${unit}</small></div>${trendTxt(next6)}</div>
+      <div class="card"><div class="label">24時間後</div>
+        <div class="value">${vals[24].toFixed(1)} <small>${unit}</small></div>${trendTxt(next24)}</div>
+      <div class="card"><div class="label">7日間の範囲</div>
+        <div class="value" style="font-size:1.2rem">${min.toFixed(0)}–${max.toFixed(0)} <small>${unit}</small></div></div>
+    </div>`;
+
+  document.getElementById('content').innerHTML =
+    alertHtml + cards +
+    `<div class="panel"><h2>気圧の推移 <span class="legend">横スワイプで移動 / 長押しで詳細</span></h2>
+      <div id="chartOuter">
+        <svg id="yAxisFixed"></svg>
+        <div id="chartScroll"></div>
+      </div></div>`;
+
+  drawChart(times, vals, unit, drops);
+}
+
+function drawChart(times, vals, unit, drops) {
+  const scroll = document.getElementById('chartScroll');
+  const yAxis = document.getElementById('yAxisFixed');
+  const n = vals.length;
+  const W = Math.max(820, n * 4.6);
+  const H = 320;
+  const padL = 48, padR = 16, padT = 16, padB = 40;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+
+  const minV = Math.min(...vals), maxV = Math.max(...vals);
+  const lo = Math.floor((minV - 2) / 2) * 2, hi = Math.ceil((maxV + 2) / 2) * 2;
+  const x = i => padL + (i / (n - 1)) * plotW;
+  const y = v => padT + (1 - (v - lo) / (hi - lo)) * plotH;
+
+  let path = '', area = '';
+  vals.forEach((v, i) => {
+    path += (i === 0 ? 'M' : 'L') + x(i).toFixed(1) + ',' + y(v).toFixed(1) + ' ';
+  });
+  area = path + `L${x(n-1).toFixed(1)},${padT+plotH} L${x(0).toFixed(1)},${padT+plotH} Z`;
+
+  // Y grid（線はスクロール側、ラベルは固定側）
+  let grid = '', yLabels = '';
+  const step = (hi - lo) / 5;
+  for (let k = 0; k <= 5; k++) {
+    const v = lo + step * k, yy = y(v);
+    grid += `<line class="gridline" x1="${padL}" y1="${yy}" x2="${W-padR}" y2="${yy}"/>`;
+    yLabels += `<text class="axis-label" x="${padL-8}" y="${yy+4}" text-anchor="end">${v.toFixed(0)}</text>`;
+  }
+  // 固定Y軸の単位ラベル
+  yLabels += `<text class="axis-label" x="${padL-8}" y="${padT-4}" text-anchor="end" style="font-size:9px">${unit}</text>`;
+
+  // Day labels (00:00 boundaries)
+  let days = '';
+  times.forEach((t, i) => {
+    const d = new Date(t);
+    if (d.getHours() === 0) {
+      const xx = x(i);
+      days += `<line class="gridline" x1="${xx}" y1="${padT}" x2="${xx}" y2="${padT+plotH}" stroke-dasharray="3,3"/>`;
+      days += `<text class="day-label" x="${xx+4}" y="${padT+14}">${d.getMonth()+1}/${d.getDate()}</text>`;
+    }
+  });
+
+  // Drop region highlights
+  let regions = '';
+  for (const dr of drops) {
+    const x1 = x(dr.startIdx - 6 < 0 ? 0 : dr.startIdx - 6), x2 = x(dr.endIdx);
+    regions += `<rect x="${x1}" y="${padT}" width="${x2-x1}" height="${plotH}" fill="rgba(255,107,107,0.10)"/>`;
+  }
+
+  // 固定Y軸レイヤー（スクロールしない。左端の幅ぶんだけ。背景でグラフを隠す）
+  yAxis.setAttribute('viewBox', `0 0 ${padL} ${H}`);
+  yAxis.setAttribute('width', padL);
+  yAxis.setAttribute('height', H);
+  yAxis.innerHTML = `<rect x="0" y="0" width="${padL}" height="${H}" fill="var(--panel)"/>${yLabels}`;
+
+  scroll.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" id="svg">
+      <defs><linearGradient id="grad" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="rgba(76,201,240,0.25)"/>
+        <stop offset="100%" stop-color="rgba(76,201,240,0)"/>
+      </linearGradient></defs>
+      ${regions}${grid}${days}
+      <path class="pressure-area" d="${area}"/>
+      <path class="pressure-line" d="${path}"/>
+      <circle class="hover-dot" id="dot" r="4" style="opacity:0"/>
+      <rect id="hit" x="${padL}" y="${padT}" width="${plotW}" height="${plotH}" fill="transparent"/>
+    </svg>
+    <div class="tooltip" id="tip"></div>`;
+
+  const svg = document.getElementById('svg');
+  const hit = document.getElementById('hit');
+  const dot = document.getElementById('dot');
+  const tip = document.getElementById('tip');
+
+  function move(clientX) {
+    const rect = svg.getBoundingClientRect();
+    const scale = W / rect.width;
+    const px = (clientX - rect.left) * scale;
+    let i = Math.round(((px - padL) / plotW) * (n - 1));
+    i = Math.max(0, Math.min(n - 1, i));
+    const cx = x(i), cy = y(vals[i]);
+    dot.setAttribute('cx', cx); dot.setAttribute('cy', cy); dot.style.opacity = 1;
+    tip.style.opacity = 1;
+    tip.style.left = (cx / scale) + 'px';
+    tip.style.top = (cy / scale) + 'px';
+    tip.innerHTML = `${fmtTime(times[i])}<br><span class="tp">${vals[i].toFixed(1)} ${unit}</span>`;
+  }
+  hit.addEventListener('mousemove', e => move(e.clientX));
+  hit.addEventListener('mouseleave', () => { dot.style.opacity = 0; tip.style.opacity = 0; });
+
+  // タッチ: スワイプ(横移動)は横スクロールに任せ、ほぼ静止しているときだけ値を表示
+  let startX = 0, startY = 0, reading = false;
+  hit.addEventListener('touchstart', e => {
+    startX = e.touches[0].clientX;
+    startY = e.touches[0].clientY;
+    reading = false;
+  }, {passive:true});
+  hit.addEventListener('touchmove', e => {
+    const dx = Math.abs(e.touches[0].clientX - startX);
+    const dy = Math.abs(e.touches[0].clientY - startY);
+    // すでに読み取りモードなら値を更新（このときだけスクロールを止める）
+    if (reading) {
+      move(e.touches[0].clientX);
+      e.preventDefault();
+      return;
+    }
+    // 横移動が大きい → スクロール意図。何もしない（ブラウザのスクロールに任せる）
+    if (dx > 10 && dx > dy) return;
+    // ほぼ静止のまま少し動いた → 読み取り意図。ツールチップ表示に切替
+    if (dx < 8 && dy < 8) {
+      reading = true;
+      move(e.touches[0].clientX);
+      e.preventDefault();
+    }
+  }, {passive:false});
+  hit.addEventListener('touchend', () => {
+    reading = false;
+    setTimeout(() => { dot.style.opacity = 0; tip.style.opacity = 0; }, 1200);
+  });
+}
+
+load();
+</script>
+</body>
+</html>
