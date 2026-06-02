@@ -435,13 +435,15 @@ function drawChart(times, vals, unit, drops, curIdx) {
     tip.style.top = (cy / scale) + 'px';
     tip.innerHTML = `${fmtTime(times[i])}<br><span class="tp">${vals[i].toFixed(1)} ${unit}</span>`;
   }
-  hit.addEventListener('mousemove', e => move(e.clientX));
-  hit.addEventListener('mouseleave', () => { dot.style.opacity = 0; tip.style.opacity = 0; });
+  let touchUsed = false; // タッチ後に発火する合成マウスイベントを無視するため
+  hit.addEventListener('mousemove', e => { if (touchUsed) return; move(e.clientX); });
+  hit.addEventListener('mouseleave', () => { if (touchUsed) return; dot.style.opacity = 0; tip.style.opacity = 0; });
 
   // タッチ: 非表示時は長押しで読み取り開始。表示中はなぞって時刻変更、タップで非表示
   let startX = 0, startY = 0, reading = false, moved = false, visible = false, wasVisible = false, pressTimer = null, hideTimer = null;
   function hideTip() { reading = false; visible = false; clearTimeout(hideTimer); dot.style.opacity = 0; tip.style.opacity = 0; }
   hit.addEventListener('touchstart', e => {
+    touchUsed = true;
     startX = e.touches[0].clientX;
     startY = e.touches[0].clientY;
     moved = false;
