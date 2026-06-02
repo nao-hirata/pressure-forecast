@@ -248,7 +248,7 @@ function detectDrops(times, vals, fromIdx = 0) {
       if (d6 >= 3) alerts.push({ idx: i, type: '6h', drop: d6, time: times[i] });
     }
   }
-  // 連続検出をまとめる（区間化）
+  // 連続検出を区間化（隣接する警告点をまとめる）
   const merged = [];
   for (const a of alerts) {
     const last = merged[merged.length-1];
@@ -259,12 +259,24 @@ function detectDrops(times, vals, fromIdx = 0) {
       merged.push({ startIdx: a.idx, endIdx: a.idx, startTime: times[Math.max(0, a.idx-6)], endTime: a.time, maxDrop: a.drop });
     }
   }
+  // 緩い低下で途切れた近接区間を、隙間（≤12h）で気圧が反発していなければ統合
+  const joined = [];
   for (const m of merged) {
+    const last = joined[joined.length-1];
+    if (last && m.startIdx - last.endIdx <= 12 &&
+        Math.max(...vals.slice(last.endIdx, m.startIdx + 1)) <= vals[last.endIdx] + 1) {
+      last.endIdx = m.endIdx; last.endTime = m.endTime;
+      last.maxDrop = Math.max(last.maxDrop, m.maxDrop);
+    } else {
+      joined.push(m);
+    }
+  }
+  for (const m of joined) {
     const s = Math.max(0, m.startIdx - 6), e = m.endIdx;
     const seg = vals.slice(s, e + 1);
     m.totalDrop = Math.max(...seg) - Math.min(...seg);
   }
-  return merged;
+  return joined;
 }
 
 function render(data) {
