@@ -426,32 +426,46 @@ function drawChart(times, vals, unit, drops, curIdx) {
   hit.addEventListener('mousemove', e => move(e.clientX));
   hit.addEventListener('mouseleave', () => { dot.style.opacity = 0; tip.style.opacity = 0; });
 
-  // タッチ: 縦横スクロールはブラウザに任せ、長押しで値の読み取りに入る
-  let startX = 0, startY = 0, reading = false, pressTimer = null, hideTimer = null;
+  // タッチ: 非表示時は長押しで読み取り開始。表示中はなぞって時刻変更、タップで非表示
+  let startX = 0, startY = 0, reading = false, moved = false, visible = false, wasVisible = false, pressTimer = null, hideTimer = null;
+  function hideTip() { reading = false; visible = false; clearTimeout(hideTimer); dot.style.opacity = 0; tip.style.opacity = 0; }
   hit.addEventListener('touchstart', e => {
     startX = e.touches[0].clientX;
     startY = e.touches[0].clientY;
-    reading = false;
+    moved = false;
+    wasVisible = visible;
     clearTimeout(hideTimer);
-    const cx = e.touches[0].clientX;
-    pressTimer = setTimeout(() => { reading = true; move(cx); }, 350);
+    clearTimeout(pressTimer);
+    if (visible) {
+      reading = true; // 表示中は長押し不要で即なぞり読み取り
+    } else {
+      const cx = e.touches[0].clientX;
+      pressTimer = setTimeout(() => { reading = true; visible = true; move(cx); }, 350);
+    }
   }, {passive:true});
   hit.addEventListener('touchmove', e => {
-    // 長押し成立後は値を更新（このときだけスクロールを止める）
+    const dx = Math.abs(e.touches[0].clientX - startX);
+    const dy = Math.abs(e.touches[0].clientY - startY);
+    if (dx > 8 || dy > 8) moved = true;
+    // 読み取り中は値を更新（このときだけスクロールを止める）
     if (reading) {
       move(e.touches[0].clientX);
+      visible = true;
       e.preventDefault();
       return;
     }
     // 長押し成立前に動いた → スクロール意図。長押しを中止しブラウザに任せる
-    const dx = Math.abs(e.touches[0].clientX - startX);
-    const dy = Math.abs(e.touches[0].clientY - startY);
-    if (dx > 8 || dy > 8) clearTimeout(pressTimer);
+    if (moved) clearTimeout(pressTimer);
   }, {passive:false});
   hit.addEventListener('touchend', () => {
     clearTimeout(pressTimer);
-    reading = false;
-    hideTimer = setTimeout(() => { dot.style.opacity = 0; tip.style.opacity = 0; }, 3000);
+    // 表示中に動かさずタップ → 非表示
+    if (wasVisible && !moved) { hideTip(); return; }
+    // なぞって読み取った → 表示を残し一定時間後に消す
+    if (reading) {
+      reading = false;
+      hideTimer = setTimeout(() => { dot.style.opacity = 0; tip.style.opacity = 0; visible = false; }, 3000);
+    }
   }, {passive:true});
 }
 
