@@ -19,7 +19,7 @@ python3 -m http.server 8000
 
 `<script type="module">` 内の処理は次の流れ。すべてモジュールスコープの関数で、状態管理ライブラリは使わない。
 
-- `load()` — `ENDPOINTS`（`forecast` → `gfs` の順にフォールバック）を順に fetch し、最初に成功したレスポンスで `render()` を呼ぶ。全滅した場合は `#content` に原因別のエラー UI を描画する。
+- `load()` — `ENDPOINTS`（`jma` → `forecast` → `gfs` の順にフォールバック）を順に fetch し、最初に成功したレスポンスで `render()` を呼ぶ。全滅した場合は `#content` に原因別のエラー UI を描画する。いずれも `past_days=7`（直近7日の実績）＋ `forecast_days=7`（予報）で取得する。
 - `detectDrops(times, vals)` — 気圧低下区間を検出する。「6時間で3hPa以上の低下」を全点で判定し、近接する検出（インデックス差 ≤ 3）を1つの区間にまとめて返す。警告カードとグラフ上の赤いハイライト領域の両方に使われる。
 - `render(data)` — 現在 / 6時間後 / 24時間後の気圧と変化量、7日間の範囲のカード、警告 / 安全メッセージを組み立てて `#content` に流し込み、最後に `drawChart()` を呼ぶ。
 - `drawChart(times, vals, unit, drops)` — グラフを SVG 文字列で生成する（描画ライブラリ不使用）。
@@ -27,13 +27,14 @@ python3 -m http.server 8000
 ## 体調記録の実装
 
 - **保存層の抽象化（`store`）** — `store.add` / `store.remove` と購読の3つだけを持つ薄いオブジェクト。`initStore()` が `firebaseEnabled()`（`firebaseConfig.projectId` が `YOUR_` を含まないか）で実装を選ぶ。設定済みなら Firebase を動的 import して `onSnapshot` でリアルタイム購読（コレクション `cobu_logs`、`createdAt` 降順）、未設定/初期化失敗なら `localStore()`（`localStorage` キー `cobu_logs_v1`）にフォールバック。どちらの経路でも記録が変わるたび `LOGS` を更新して `renderLogs()` を呼ぶ。
-- **記録1件** — `{ time, memo, pressure, createdAt }`。`time` は datetime-local と同じ壁時計文字列。`pressure` は `nearestPressure()` が取得範囲内の最近傍値（範囲外は `null`）を入れたスナップショットで、後日データ範囲外になっても一覧に気圧を出せる。
-- **入力 UI** — グラフ詳細表示中、`drawChart` 内 `move()` が `selectedTime` を更新しグラフ下の `#recBar` を表示。「この時刻の不調を記録」または一覧の「＋ 記録を追加」から `openRecordDialog()` が `<dialog id="recDialog">` を開く（日時は編集可、初期値は選択時刻 or 現在）。`drawChartView()` のモード切替時は `selectedTime` と `#recBar` をリセットする。
-- **一覧と前後1日グラフ** — `renderLogs()` が `#logsPanel`（`#content` の外なので気圧取得失敗時も生きる）にカードを描画。カードのタップ／削除はパネルへのイベント委譲で処理。カードを開くと `drawMiniChart()` が記録時刻 ±1日（±24h）を `ALL` から切り出した静的 SVG（スクロール／ツールチップなし）を描き、記録時刻に縦マーカーを打つ。範囲外なら「取得範囲外」を表示。
+- **記録1件** — `{ time, memo, pressure, series, createdAt }`。`time` は datetime-local と同じ壁時計文字列。`pressure` は `nearestPressure()` が取得範囲内の最近傍値（範囲外は `null`）を入れたスナップショット。`series` は `snapshotSeries()` が記録日を含む3カレンダー日（`miniWindow()` の `[前々日0:00, 翌日0:00)`）の気圧列を `{ start, vals }` で切り出したスナップショット。どちらも保存時に確定するため、後日データ取得範囲（直近7日）から外れた古い記録でも、気圧の値とミニグラフを復元できる（履歴の自前保持）。`series` を持たない旧記録は `ALL` 復元にフォールバックし、範囲外なら「取得範囲外」になる。
+- **入力 UI** — グラフ下の `#recBar`（「記録」ボタン `#recBtn`）は常時表示。`drawChart` 内 `move()` がグラフのなぞりで `selectedTime` を更新しラベルを「選択中: …」に変える。「記録」ボタンは選択の有無にかかわらず押せ、`openRecordDialog(selectedTime)` が `<dialog id="recDialog">` を開く（日時は編集可、初期値は選択時刻、未選択なら現在時刻）。`drawChartView()` のモード切替時は `selectedTime` をリセットしラベルを未選択案内へ戻す。
+- **一覧と3日ミニグラフ** — `renderLogs()` が `#logsPanel`（`#content` の外なので気圧取得失敗時も生きる）にカードを描画。カードのタップはパネルへのイベント委譲で処理（展開時は先に表示→`drawMiniChart()` の順で、コンテナ幅を確定させてから描く）。カードを開くと `drawMiniChart()` が記録日を含む3カレンダー日（`miniWindow()`、記録日が右端）の静的 SVG（ツールチップなし）を描き、記録時刻に縦マーカーを打つ。**メイングラフと同一縮尺**（`H=320`・横密度 4.6px/h・共通 `yRange`・メインと同じ `pressure-line`/`gridline`/`axis-label`/`day-label` クラス）で描くので低下傾斜を直接見比べられ、カードに収まらない時だけ横スクロール（`.log-mini-chart { overflow-x:auto }`、初期位置は記録日付近へ寄せる）。データは保存済み `series` を優先し、無ければ `ALL` から切り出す（どちらも不可なら「取得範囲外」）。削除はカードを開いた下部の「🗑 記録を削除」から `<dialog id="delDialog">` で確認してから `store.remove()` を実行する。
 
 ## グラフ実装の要点
 
 - **固定Y軸 + 横スクロール本体の2レイヤー構成**。`#yAxisFixed`（固定 SVG、左端 `padL=48px` 幅、不透明背景で本体を隠す）に目盛りラベル、`#chartScroll` 内の本体 SVG（幅 `W = max(820, n*4.6)`）にグリッド線・折れ線・面・日付境界・低下ハイライトを描く。Y軸ラベルだけが横スクロールに追従しない。
+- **Y軸の値域はメイングラフとミニグラフで共通**。`yRange(vals)` が基準域 `Y_BASE_LO=985`〜`Y_BASE_HI=1025`(hPa) を必ず確保し、データがはみ出たら2hPa刻みで上下に自動拡張する。両グラフが同じ関数で値域を決めるので、記録カードのミニグラフとメイングラフを同じスケールで見比べられる。
 - **タッチ操作の出し分け**: `touchmove` で横移動が大きい（`dx > 10 && dx > dy`）ときはブラウザの横スクロールに任せ、ほぼ静止（`dx < 8 && dy < 8`）のときだけツールチップ読み取りモードに切り替えて `preventDefault()` する。スクロールとツールチップ表示を両立させるための分岐なので、ここを変更するときは両挙動を必ず確認すること。
 
 ## 設定値
