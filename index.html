@@ -214,12 +214,6 @@
     border-radius: 8px; padding: 8px 10px; margin-bottom: 12px;
   }
   .logs-empty { font-size: 0.84rem; color: var(--ink-dim); padding: 4px 0; }
-  .log-add {
-    background: transparent; color: var(--accent);
-    border: 1px solid var(--line); border-radius: 8px;
-    font-family: 'Noto Sans JP', sans-serif; font-size: 0.76rem; font-weight: 500;
-    padding: 5px 12px; cursor: pointer;
-  }
   .log-list { display: flex; flex-direction: column; gap: 10px; }
   .log-card {
     background: var(--panel-2); border: 1px solid var(--line);
@@ -233,17 +227,21 @@
   .log-memo { font-size: 0.84rem; color: var(--ink-dim); margin-top: 4px; white-space: pre-wrap; word-break: break-word; }
   .log-side { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
   .log-p { font-family: 'Outfit'; font-size: 0.86rem; color: var(--ink-dim); white-space: nowrap; }
-  .log-del {
-    background: transparent; border: none; color: var(--ink-dim);
-    font-size: 1.2rem; line-height: 1; cursor: pointer; padding: 2px 6px; border-radius: 6px;
-  }
-  .log-del:active { color: var(--warn); }
   .log-mini { padding: 0 14px 14px; }
   .log-mini[hidden] { display: none; }
+  .log-mini-actions { display: flex; justify-content: flex-end; margin-top: 10px; }
+  .log-del {
+    background: transparent; color: var(--warn);
+    border: 1px solid rgba(255,107,107,0.4); border-radius: 8px;
+    font-family: 'Noto Sans JP', sans-serif; font-size: 0.78rem; font-weight: 600;
+    padding: 6px 14px; cursor: pointer;
+  }
+  .log-del:active { background: var(--warn-bg); }
   .mini-empty { font-size: 0.8rem; color: var(--ink-dim); padding: 8px 0; }
   .mini-line { fill: none; stroke: var(--accent); stroke-width: 2; }
   .mini-mark { stroke: var(--warn); stroke-width: 1.5; stroke-dasharray: 3,3; }
   .mini-axis { fill: var(--ink-dim); font-size: 10px; font-family: 'Outfit'; }
+  .mini-day { fill: var(--ink); font-size: 10px; font-family: 'Outfit'; font-weight: 600; }
 
   /* 体調記録: 入力ダイアログ */
   .rec-dialog {
@@ -263,12 +261,14 @@
   }
   .rec-dialog textarea { resize: vertical; }
   .rec-dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 4px; }
-  .btn-ghost, .btn-primary {
+  .btn-ghost, .btn-primary, .btn-danger {
     font-family: 'Noto Sans JP', sans-serif; font-size: 0.84rem; font-weight: 600;
     padding: 8px 18px; border-radius: 8px; cursor: pointer;
   }
   .btn-ghost { background: transparent; color: var(--ink-dim); border: 1px solid var(--line); }
   .btn-primary { background: var(--accent); color: var(--bg); border: none; }
+  .btn-danger { background: var(--warn); color: var(--bg); border: none; }
+  .del-text { font-size: 0.9rem; color: var(--ink); margin-bottom: 16px; }
 </style>
 </head>
 <body>
@@ -426,6 +426,17 @@ const trendTxt = (d, unit) => {
   return `<span class="trend flat">→ 横ばい</span>`;
 };
 
+// メイングラフ・ミニグラフ共通のY軸範囲。基準範囲を必ず確保し、データがはみ出たら2hPa刻みで広げる
+const Y_BASE_LO = 985, Y_BASE_HI = 1025;
+function yRange(vals) {
+  const fin = vals.filter(v => Number.isFinite(v));
+  const minV = fin.length ? Math.min(...fin) : Y_BASE_LO;
+  const maxV = fin.length ? Math.max(...fin) : Y_BASE_HI;
+  const lo = Math.min(Y_BASE_LO, Math.floor((minV - 2) / 2) * 2);
+  const hi = Math.max(Y_BASE_HI, Math.ceil((maxV + 2) / 2) * 2);
+  return { lo, hi };
+}
+
 // グラフ用のデータ切り出し。mode: 'forecast'（今日0時〜7日先） / 'past'（直近7日間）
 function sliceFor(mode) {
   const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
@@ -497,18 +508,16 @@ function render() {
         <div id="chartScroll"></div>
       </div>
       <div class="chart-hint">横スワイプで移動・長押しで詳細</div>
-      <div id="recBar" class="rec-bar" hidden>
-        <span class="rec-bar-label">選択中: <b class="rec-bar-time"></b></span>
-        <button type="button" id="recBtn" class="rec-btn">この時刻の不調を記録</button>
+      <div id="recBar" class="rec-bar">
+        <span class="rec-bar-label" id="recBarLabel">グラフをなぞって時刻を選択（未選択なら現在時刻で記録）</span>
+        <button type="button" id="recBtn" class="rec-btn">記録</button>
       </div></div>`;
 
   document.getElementById('viewToggle').addEventListener('click', e => {
     const btn = e.target.closest('button[data-mode]');
     if (btn) drawChartView(btn.dataset.mode);
   });
-  document.getElementById('recBtn').addEventListener('click', () => {
-    if (selectedTime) openRecordDialog(selectedTime);
-  });
+  document.getElementById('recBtn').addEventListener('click', () => openRecordDialog(selectedTime));
   drawChartView('forecast');
 }
 
@@ -517,8 +526,8 @@ function drawChartView(mode) {
   document.querySelectorAll('#viewToggle button').forEach(b =>
     b.classList.toggle('active', b.dataset.mode === mode));
   selectedTime = null;
-  const rb = document.getElementById('recBar');
-  if (rb) rb.hidden = true;
+  const lbl = document.getElementById('recBarLabel');
+  if (lbl) lbl.textContent = 'グラフをなぞって時刻を選択（未選択なら現在時刻で記録）';
   const { times, vals, curIdx, showNow } = sliceFor(mode);
   const drops = detectDrops(times, vals, mode === 'past' ? 0 : curIdx);
   drawChart(times, vals, ALL.unit, drops, curIdx, showNow);
@@ -533,8 +542,7 @@ function drawChart(times, vals, unit, drops, curIdx, showNow) {
   const padL = 48, padR = 16, padT = 26, padB = 40;
   const plotW = W - padL - padR, plotH = H - padT - padB;
 
-  const minV = Math.min(...vals), maxV = Math.max(...vals);
-  const lo = Math.floor((minV - 2) / 2) * 2, hi = Math.ceil((maxV + 2) / 2) * 2;
+  const { lo, hi } = yRange(vals);
   const x = i => padL + (i / (n - 1)) * plotW;
   const y = v => padT + (1 - (v - lo) / (hi - lo)) * plotH;
 
@@ -618,8 +626,8 @@ function drawChart(times, vals, unit, drops, curIdx, showNow) {
     tip.style.top = (cy / scale) + 'px';
     tip.innerHTML = `${fmtTime(times[i])}<br><span class="tp">${vals[i].toFixed(1)} ${unit}</span>`;
     selectedTime = times[i];
-    const rb = document.getElementById('recBar');
-    if (rb) { rb.hidden = false; rb.querySelector('.rec-bar-time').textContent = fmtTime(times[i]); }
+    const lbl = document.getElementById('recBarLabel');
+    if (lbl) lbl.innerHTML = `選択中: <b class="rec-bar-time">${fmtTime(times[i])}</b>`;
   }
   let touchUsed = false; // タッチ後に発火する合成マウスイベントを無視するため
   hit.addEventListener('mousemove', e => { if (touchUsed) return; move(e.clientX); });
@@ -670,7 +678,7 @@ function drawChart(times, vals, unit, drops, curIdx, showNow) {
 }
 
 // ===== 体調記録 =====
-let selectedTime = null, LOGS = [], store = null;
+let selectedTime = null, LOGS = [], store = null, pendingDeleteId = null;
 
 const escapeHtml = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const firebaseEnabled = () => !!(firebaseConfig && firebaseConfig.projectId && !firebaseConfig.projectId.includes('YOUR_'));
@@ -737,6 +745,25 @@ function nearestPressure(timeISO) {
   return ALL.vals[best];
 }
 
+// 記録時刻の前後1.5日（ミニグラフ用）の気圧を記録に埋め込む。後日データ範囲外になっても復元できる。
+// 1時間等間隔なので開始時刻＋値配列だけで持つ（取得範囲外で2点未満なら null）
+function snapshotSeries(timeISO) {
+  if (!ALL) return null;
+  const c = new Date(timeISO).getTime();
+  const lo = c - 36 * 3600e3, hi = c + 36 * 3600e3;
+  let start = null;
+  const vals = [];
+  for (let i = 0; i < ALL.times.length; i++) {
+    const tm = new Date(ALL.times[i]).getTime();
+    if (tm >= lo && tm <= hi) {
+      if (start === null) start = ALL.times[i];
+      vals.push(ALL.vals[i]);
+    }
+  }
+  if (vals.length < 2) return null;
+  return { start, vals };
+}
+
 // datetime-local 入力用の "YYYY-MM-DDTHH:mm"（ローカル壁時計）
 function toInputValue(d) {
   const p = n => String(n).padStart(2, '0');
@@ -750,16 +777,21 @@ function openRecordDialog(timeISO) {
   document.getElementById('recDialog').showModal();
 }
 
+function openDeleteDialog(id) {
+  pendingDeleteId = id;
+  document.getElementById('delDialog').showModal();
+}
+
 function renderLogs() {
   const panel = document.getElementById('logsPanel');
   if (!panel) return;
   const unit = ALL ? ALL.unit : 'hPa';
-  let html = `<h2>Cobu の体調記録 <button type="button" class="log-add">＋ 記録を追加</button></h2>`;
+  let html = `<h2>記録一覧</h2>`;
   if (store && !store.synced) {
     html += `<div class="logs-note">この端末内のみ保存中です。複数端末で共有するには Firebase を設定してください（README 参照）。</div>`;
   }
   if (!LOGS.length) {
-    html += `<div class="logs-empty">まだ記録はありません。グラフで時刻を選んで「この時刻の不調を記録」、または「＋ 記録を追加」から登録できます。</div>`;
+    html += `<div class="logs-empty">まだ記録はありません。グラフで時刻を選んで下の「記録」ボタンから登録できます。</div>`;
   } else {
     html += '<div class="log-list">';
     for (const log of LOGS) {
@@ -772,10 +804,14 @@ function renderLogs() {
           </div>
           <div class="log-side">
             <span class="log-p">${p}</span>
-            <button type="button" class="log-del" data-id="${escapeHtml(log.id)}" aria-label="削除">×</button>
           </div>
         </div>
-        <div class="log-mini" hidden></div>
+        <div class="log-mini" hidden>
+          <div class="log-mini-chart"></div>
+          <div class="log-mini-actions">
+            <button type="button" class="log-del" data-id="${escapeHtml(log.id)}">🗑 記録を削除</button>
+          </div>
+        </div>
       </div>`;
     }
     html += '</div>';
@@ -783,24 +819,32 @@ function renderLogs() {
   panel.innerHTML = html;
 }
 
-// 記録時刻の前後1日の気圧ミニグラフ（静的・スクロール/ツールチップなし）
-function drawMiniChart(container, centerTimeISO) {
-  if (!ALL) { container.innerHTML = '<div class="mini-empty">気圧データを取得中です。</div>'; return; }
+// 記録時刻を中央に前後1.5日（計3日）の気圧ミニグラフ（静的・スクロール/ツールチップなし）
+// 記録に埋め込んだ series があればそれを使い、無ければ ALL から復元する
+function drawMiniChart(container, centerTimeISO, series) {
   const c = new Date(centerTimeISO).getTime();
-  const lo = c - 24 * 3600e3, hi = c + 24 * 3600e3;
-  const idx = [];
-  for (let i = 0; i < ALL.times.length; i++) {
-    const tm = new Date(ALL.times[i]).getTime();
-    if (tm >= lo && tm <= hi) idx.push(i);
+  let times, vals;
+  if (series && Array.isArray(series.vals) && series.vals.length >= 2) {
+    const startMs = new Date(series.start).getTime();
+    times = series.vals.map((_, i) => new Date(startMs + i * 3600e3));
+    vals = series.vals;
+  } else if (ALL) {
+    const lo = c - 36 * 3600e3, hi = c + 36 * 3600e3;
+    const idx = [];
+    for (let i = 0; i < ALL.times.length; i++) {
+      const tm = new Date(ALL.times[i]).getTime();
+      if (tm >= lo && tm <= hi) idx.push(i);
+    }
+    if (idx.length < 2) { container.innerHTML = '<div class="mini-empty">この期間の気圧データは取得範囲外です。</div>'; return; }
+    times = idx.map(i => new Date(ALL.times[i]));
+    vals = idx.map(i => ALL.vals[i]);
+  } else {
+    container.innerHTML = '<div class="mini-empty">気圧データを取得中です。</div>'; return;
   }
-  if (idx.length < 2) { container.innerHTML = '<div class="mini-empty">この期間の気圧データは取得範囲外です。</div>'; return; }
-  const times = idx.map(i => ALL.times[i]);
-  const vals = idx.map(i => ALL.vals[i]);
   const n = vals.length;
-  const W = 320, H = 140, padL = 34, padR = 10, padT = 16, padB = 22;
+  const W = 320, H = 140, padL = 34, padR = 10, padT = 16, padB = 10;
   const plotW = W - padL - padR, plotH = H - padT - padB;
-  const minV = Math.min(...vals), maxV = Math.max(...vals);
-  const loV = Math.floor((minV - 1) / 2) * 2, hiV = Math.ceil((maxV + 1) / 2) * 2;
+  const { lo: loV, hi: hiV } = yRange(vals);
   const span = (hiV - loV) || 1;
   const x = i => padL + (i / (n - 1)) * plotW;
   const y = v => padT + (1 - (v - loV) / span) * plotH;
@@ -817,23 +861,28 @@ function drawMiniChart(container, centerTimeISO) {
     grid += `<line class="gridline" x1="${padL}" y1="${yy.toFixed(1)}" x2="${W-padR}" y2="${yy.toFixed(1)}"/>`;
     yl += `<text class="mini-axis" x="${padL-6}" y="${(yy+3).toFixed(1)}" text-anchor="end">${v.toFixed(0)}</text>`;
   }
-  // X方向の罫線と大まかな時刻（6時間ごと。0時は日付、それ以外は時）
-  let xg = '', xl = '';
+  // 日付境界（0時）の縦線＋日付ラベル（メイングラフと同じ出し方）
+  let days = '';
   times.forEach((t, i) => {
     const d = new Date(t);
-    if (d.getHours() % 6 !== 0) return;
+    if (d.getHours() !== 0) return;
     const xx = x(i);
-    xg += `<line class="gridline" x1="${xx.toFixed(1)}" y1="${padT}" x2="${xx.toFixed(1)}" y2="${padT+plotH}" stroke-dasharray="3,3"/>`;
-    const lab = d.getHours() === 0 ? `${d.getMonth()+1}/${d.getDate()}` : `${d.getHours()}`;
-    xl += `<text class="mini-axis" x="${xx.toFixed(1)}" y="${H-6}" text-anchor="middle">${lab}</text>`;
+    days += `<line class="gridline" x1="${xx.toFixed(1)}" y1="${padT}" x2="${xx.toFixed(1)}" y2="${padT+plotH}" stroke-dasharray="3,3"/>`;
+    days += `<text class="mini-day" x="${(xx+4).toFixed(1)}" y="${padT+11}">${d.getMonth()+1}/${d.getDate()}</text>`;
   });
+  // グラデーションはメイングラフと同色。複数カード同時表示でidが衝突しないよう一意にする
+  const gid = 'gm' + Math.random().toString(36).slice(2);
   container.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="xMidYMid meet" style="display:block">
-    ${grid}${xg}
-    <path d="${area}" fill="rgba(76,201,240,0.12)"/>
+    <defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="rgba(76,201,240,0.25)"/>
+      <stop offset="100%" stop-color="rgba(76,201,240,0)"/>
+    </linearGradient></defs>
+    ${grid}${days}
+    <path d="${area}" fill="url(#${gid})"/>
     <path class="mini-line" d="${path}"/>
     <line class="mini-mark" x1="${mx}" y1="${padT}" x2="${mx}" y2="${padT+plotH}"/>
     <circle cx="${mx}" cy="${y(vals[best]).toFixed(1)}" r="3.5" fill="var(--warn)"/>
-    ${yl}${xl}
+    ${yl}
   </svg>`;
 }
 
@@ -845,21 +894,32 @@ function setupRecordingUI() {
     if (!time) return;
     const memo = document.getElementById('recMemo').value.trim();
     try {
-      await store.add({ time, memo, pressure: nearestPressure(time), createdAt: Date.now() });
+      await store.add({ time, memo, pressure: nearestPressure(time), series: snapshotSeries(time), createdAt: Date.now() });
       dlg.close();
     } catch (e) {
       alert('保存に失敗しました: ' + e.message);
     }
   });
+  const delDlg = document.getElementById('delDialog');
+  document.getElementById('delCancel').addEventListener('click', () => delDlg.close());
+  document.getElementById('delConfirm').addEventListener('click', async () => {
+    if (pendingDeleteId) {
+      try { await store.remove(pendingDeleteId); } catch (e) { alert('削除に失敗しました: ' + e.message); }
+    }
+    pendingDeleteId = null;
+    delDlg.close();
+  });
   document.getElementById('logsPanel').addEventListener('click', e => {
     const del = e.target.closest('.log-del');
-    if (del) { e.stopPropagation(); if (confirm('この記録を削除しますか？')) store.remove(del.dataset.id); return; }
-    if (e.target.closest('.log-add')) { openRecordDialog(null); return; }
+    if (del) { e.stopPropagation(); openDeleteDialog(del.dataset.id); return; }
     const card = e.target.closest('.log-card');
     if (card) {
       const mini = card.querySelector('.log-mini');
-      if (mini.hidden) { drawMiniChart(mini, card.dataset.time); mini.hidden = false; }
-      else { mini.hidden = true; }
+      if (mini.hidden) {
+        const log = LOGS.find(l => l.id === card.dataset.id);
+        drawMiniChart(mini.querySelector('.log-mini-chart'), card.dataset.time, log && log.series);
+        mini.hidden = false;
+      } else { mini.hidden = true; }
     }
   });
 }
@@ -871,7 +931,7 @@ load();
 </script>
 
 <dialog id="recDialog" class="rec-dialog">
-  <h3>Cobu の不調を記録</h3>
+  <h3>記録 📝</h3>
   <label>日時
     <input type="datetime-local" id="recDateTime">
   </label>
@@ -881,6 +941,15 @@ load();
   <div class="rec-dialog-actions">
     <button type="button" id="recCancel" class="btn-ghost">キャンセル</button>
     <button type="button" id="recSave" class="btn-primary">保存</button>
+  </div>
+</dialog>
+
+<dialog id="delDialog" class="rec-dialog">
+  <h3>記録を削除 🗑</h3>
+  <p class="del-text">この記録を削除しますか？ この操作は取り消せません。</p>
+  <div class="rec-dialog-actions">
+    <button type="button" id="delCancel" class="btn-ghost">キャンセル</button>
+    <button type="button" id="delConfirm" class="btn-danger">削除</button>
   </div>
 </dialog>
 </body>
