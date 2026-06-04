@@ -60,6 +60,28 @@
 
   .updated { color: var(--ink-dim); font-size: 0.78rem; margin-bottom: 20px; }
 
+  .view-toggle {
+    display: inline-flex;
+    gap: 3px;
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    padding: 3px;
+  }
+  .view-toggle button {
+    background: transparent;
+    border: none;
+    color: var(--ink-dim);
+    font-family: 'Noto Sans JP', sans-serif;
+    font-size: 0.78rem;
+    font-weight: 500;
+    padding: 5px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .view-toggle button.active { background: var(--accent); color: var(--bg); font-weight: 700; }
+
   .cards {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -128,8 +150,9 @@
     margin-bottom: 14px;
     color: var(--ink);
     display: flex; justify-content: space-between; align-items: center;
+    gap: 10px; flex-wrap: wrap;
   }
-  .panel h2 .legend { font-size: 0.72rem; color: var(--ink-dim); font-family: 'Noto Sans JP'; font-weight: 400; }
+  .chart-hint { font-size: 0.7rem; color: var(--ink-dim); opacity: 0.7; text-align: right; margin-top: 8px; }
 
   #chartOuter { position: relative; width: 100%; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
   #yAxisFixed { position: absolute; left: 0; top: 0; z-index: 3; pointer-events: none; }
@@ -172,7 +195,7 @@
 <div class="wrap">
   <header>
     <h1>気圧予報 <span class="loc">東京</span></h1>
-    <span class="sub">海面更正気圧 / 1時間ごと / 7日先まで</span>
+    <span class="sub">海面更正気圧 / 1時間ごと / 過去・予報7日間</span>
   </header>
   <div class="updated" id="updated">読み込み中…</div>
 
@@ -189,10 +212,12 @@
 
 <script>
 const LAT = 35.68, LON = 139.69;
-// 複数エンドポイントを順に試す（1つ目がダメでも2つ目で取得できる場合がある）
+// 日本最適化の JMA（GSM+MSM）を優先し、ダメなら best_match→GFS の順にフォールバックする
+// past_days=7 で直近7日の実績、forecast_days=7 で予報を一度に取得する
 const ENDPOINTS = [
-  `https://api.open-meteo.com/v1/forecast?latitude=${LAT}&longitude=${LON}&hourly=pressure_msl&timezone=Asia%2FTokyo&forecast_days=7`,
-  `https://api.open-meteo.com/v1/gfs?latitude=${LAT}&longitude=${LON}&hourly=pressure_msl&timezone=Asia%2FTokyo&forecast_days=7`
+  `https://api.open-meteo.com/v1/jma?latitude=${LAT}&longitude=${LON}&hourly=pressure_msl&timezone=Asia%2FTokyo&past_days=7&forecast_days=7`,
+  `https://api.open-meteo.com/v1/forecast?latitude=${LAT}&longitude=${LON}&hourly=pressure_msl&timezone=Asia%2FTokyo&past_days=7&forecast_days=7`,
+  `https://api.open-meteo.com/v1/gfs?latitude=${LAT}&longitude=${LON}&hourly=pressure_msl&timezone=Asia%2FTokyo&past_days=7&forecast_days=7`
 ];
 
 const fmtTime = iso => {
@@ -211,7 +236,7 @@ async function load() {
       }
       const data = await res.json();
       if (!data.hourly || !data.hourly.pressure_msl) throw new Error('レスポンスに気圧データが含まれていません');
-      render(data);
+      setupData(data);
       return;
     } catch (e) {
       errors.push(`${url.split('?')[0]} → ${e.name}: ${e.message}`);
@@ -279,29 +304,57 @@ function detectDrops(times, vals, fromIdx = 0) {
   return joined;
 }
 
-function render(data) {
-  const times = data.hourly.time;
-  const vals = data.hourly.pressure_msl;
-  const unit = data.hourly_units.pressure_msl;
+// 取得した全データ（過去7日＋予報7日）と「現在」インデックスを保持する
+let ALL = null, CUR_IDX = 0;
+
+function setupData(data) {
+  ALL = {
+    times: data.hourly.time,
+    vals: data.hourly.pressure_msl,
+    unit: data.hourly_units.pressure_msl,
+  };
+  const nowMs = Date.now();
+  CUR_IDX = 0;
+  for (let i = 0; i < ALL.times.length; i++) {
+    if (new Date(ALL.times[i]).getTime() <= nowMs) CUR_IDX = i; else break;
+  }
+  render();
+}
+
+const trendTxt = (d, unit) => {
+  if (d <= -1) return `<span class="trend down">▼ ${d.toFixed(1)} ${unit}</span>`;
+  if (d >= 1) return `<span class="trend up">▲ +${d.toFixed(1)} ${unit}</span>`;
+  return `<span class="trend flat">→ 横ばい</span>`;
+};
+
+// グラフ用のデータ切り出し。mode: 'forecast'（今日0時〜7日先） / 'past'（直近7日間）
+function sliceFor(mode) {
+  const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+  let f0 = ALL.times.findIndex(t => new Date(t).getTime() >= todayStart.getTime());
+  if (f0 < 0) f0 = 0;
+  if (mode === 'past') {
+    // 当日分は予報グラフ側に出るので、前日23:00までの7日間（168時間）を表示する
+    const end = f0 - 1;
+    const start = Math.max(0, end - 167);
+    const times = ALL.times.slice(start, end + 1);
+    const vals = ALL.vals.slice(start, end + 1);
+    return { times, vals, curIdx: times.length - 1, showNow: false };
+  }
+  return { times: ALL.times.slice(f0), vals: ALL.vals.slice(f0), curIdx: CUR_IDX - f0, showNow: true };
+}
+
+// カード・警告は常に予報ベース。グラフだけトグルで予報／過去を切り替える
+function render() {
+  const unit = ALL.unit;
+  const { times, vals, curIdx } = sliceFor('forecast');
 
   document.getElementById('updated').textContent =
     `最終取得: ${fmtTime(new Date().toISOString())}（予報期間 ${fmtTime(times[0])} 〜 ${fmtTime(times[times.length-1])}）`;
 
-  const nowMs = Date.now();
-  let curIdx = 0;
-  for (let i = 0; i < times.length; i++) {
-    if (new Date(times[i]).getTime() <= nowMs) curIdx = i; else break;
-  }
+  const min = Math.min(...vals), max = Math.max(...vals);
   const cur = vals[curIdx];
   const next6 = vals[curIdx+6] != null ? vals[curIdx+6] - cur : 0;
   const next24 = vals[curIdx+24] != null ? vals[curIdx+24] - cur : 0;
-  const min = Math.min(...vals), max = Math.max(...vals);
-
-  const trendTxt = (d) => {
-    if (d <= -1) return `<span class="trend down">▼ ${d.toFixed(1)} ${unit}</span>`;
-    if (d >= 1) return `<span class="trend up">▲ +${d.toFixed(1)} ${unit}</span>`;
-    return `<span class="trend flat">→ 横ばい</span>`;
-  };
 
   const drops = detectDrops(times, vals, curIdx);
 
@@ -323,9 +376,9 @@ function render(data) {
       <div class="card"><div class="label">現在の気圧</div>
         <div class="value">${cur.toFixed(1)} <small>${unit}</small></div></div>
       <div class="card"><div class="label">6時間後</div>
-        <div class="value">${vals[curIdx+6].toFixed(1)} <small>${unit}</small></div>${trendTxt(next6)}</div>
+        <div class="value">${vals[curIdx+6] != null ? vals[curIdx+6].toFixed(1) : '–'} <small>${unit}</small></div>${trendTxt(next6, unit)}</div>
       <div class="card"><div class="label">24時間後</div>
-        <div class="value">${vals[curIdx+24].toFixed(1)} <small>${unit}</small></div>${trendTxt(next24)}</div>
+        <div class="value">${vals[curIdx+24] != null ? vals[curIdx+24].toFixed(1) : '–'} <small>${unit}</small></div>${trendTxt(next24, unit)}</div>
       <div class="card"><div class="label">7日間の変動幅</div>
         <div class="value">${(max-min).toFixed(0)} <small>${unit}</small></div>
         <div class="range-sub">${min.toFixed(0)}–${max.toFixed(0)} ${unit}</div></div>
@@ -333,16 +386,36 @@ function render(data) {
 
   document.getElementById('content').innerHTML =
     alertHtml + cards +
-    `<div class="panel"><h2>気圧の推移 <span class="legend">横スワイプで移動 / 長押しで詳細</span></h2>
+    `<div class="panel">
+      <h2>気圧の推移
+        <span class="view-toggle" id="viewToggle">
+          <button type="button" data-mode="forecast" class="active">予報</button>
+          <button type="button" data-mode="past">過去</button>
+        </span>
+      </h2>
       <div id="chartOuter">
         <svg id="yAxisFixed"></svg>
         <div id="chartScroll"></div>
-      </div></div>`;
+      </div>
+      <div class="chart-hint">横スワイプで移動・長押しで詳細</div></div>`;
 
-  drawChart(times, vals, unit, drops, curIdx);
+  document.getElementById('viewToggle').addEventListener('click', e => {
+    const btn = e.target.closest('button[data-mode]');
+    if (btn) drawChartView(btn.dataset.mode);
+  });
+  drawChartView('forecast');
 }
 
-function drawChart(times, vals, unit, drops, curIdx) {
+// グラフのみを指定モードで描き直す
+function drawChartView(mode) {
+  document.querySelectorAll('#viewToggle button').forEach(b =>
+    b.classList.toggle('active', b.dataset.mode === mode));
+  const { times, vals, curIdx, showNow } = sliceFor(mode);
+  const drops = detectDrops(times, vals, mode === 'past' ? 0 : curIdx);
+  drawChart(times, vals, ALL.unit, drops, curIdx, showNow);
+}
+
+function drawChart(times, vals, unit, drops, curIdx, showNow) {
   const scroll = document.getElementById('chartScroll');
   const yAxis = document.getElementById('yAxisFixed');
   const n = vals.length;
@@ -391,9 +464,10 @@ function drawChart(times, vals, unit, drops, curIdx) {
     regions += `<rect x="${x1}" y="${padT}" width="${x2-x1}" height="${plotH}" fill="rgba(255,107,107,0.10)"/>`;
   }
 
-  // 現在時刻の縦ライン
-  const nowX = x(curIdx);
-  const nowMark = `<line class="now-line" x1="${nowX}" y1="${padT}" x2="${nowX}" y2="${padT+plotH}"/>`;
+  // 現在時刻の縦ライン（過去表示時は右端＝現在なので出さない）
+  const nowMark = showNow
+    ? `<line class="now-line" x1="${x(curIdx)}" y1="${padT}" x2="${x(curIdx)}" y2="${padT+plotH}"/>`
+    : '';
 
   // 固定Y軸レイヤー（スクロールしない。左端の幅ぶんだけ。背景でグラフを隠す）
   yAxis.setAttribute('viewBox', `0 0 ${padL} ${H}`);
