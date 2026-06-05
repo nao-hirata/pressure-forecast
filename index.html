@@ -230,7 +230,14 @@
   .log-mini { padding: 0 14px 14px; }
   .log-mini[hidden] { display: none; }
   .log-mini-chart { overflow-x: auto; }
-  .log-mini-actions { display: flex; justify-content: flex-end; margin-top: 10px; }
+  .log-mini-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 10px; }
+  .log-edit {
+    background: transparent; color: var(--accent);
+    border: 1px solid rgba(76,201,240,0.4); border-radius: 8px;
+    font-family: 'Noto Sans JP', sans-serif; font-size: 0.78rem; font-weight: 600;
+    padding: 6px 14px; cursor: pointer;
+  }
+  .log-edit:active { background: rgba(76,201,240,0.08); }
   .log-del {
     background: transparent; color: var(--warn);
     border: 1px solid rgba(255,107,107,0.4); border-radius: 8px;
@@ -677,7 +684,7 @@ function drawChart(times, vals, unit, drops, curIdx, showNow) {
 }
 
 // ===== 体調記録 =====
-let selectedTime = null, LOGS = [], store = null, pendingDeleteId = null;
+let selectedTime = null, LOGS = [], store = null, pendingDeleteId = null, pendingEditId = null;
 
 const escapeHtml = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const firebaseEnabled = () => !!(firebaseConfig && firebaseConfig.projectId && !firebaseConfig.projectId.includes('YOUR_'));
@@ -692,6 +699,7 @@ function localStore() {
   return {
     synced: false,
     add: rec => { const a = read(); a.push({ id: uid(), ...rec }); write(a); },
+    update: (id, patch) => write(read().map(r => r.id === id ? { ...r, ...patch } : r)),
     remove: id => write(read().filter(r => r.id !== id)),
     subscribe: fn => { cb = fn; fn(sort(read())); },
   };
@@ -701,7 +709,7 @@ async function initStore() {
   if (firebaseEnabled()) {
     try {
       const { initializeApp } = await import(`https://www.gstatic.com/firebasejs/${FIREBASE_VER}/firebase-app.js`);
-      const { getFirestore, collection, addDoc, deleteDoc, doc, onSnapshot, query, orderBy } =
+      const { getFirestore, collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, query, orderBy } =
         await import(`https://www.gstatic.com/firebasejs/${FIREBASE_VER}/firebase-firestore.js`);
       const app = initializeApp(firebaseConfig);
       if (RECAPTCHA_SITE_KEY && !RECAPTCHA_SITE_KEY.includes('YOUR_')) {
@@ -717,6 +725,7 @@ async function initStore() {
       store = {
         synced: true,
         add: rec => addDoc(col, rec),
+        update: (id, patch) => updateDoc(doc(db, 'cobu_logs', id), patch),
         remove: id => deleteDoc(doc(db, 'cobu_logs', id)),
       };
       onSnapshot(query(col, orderBy('createdAt', 'desc')),
@@ -787,6 +796,14 @@ function openDeleteDialog(id) {
   document.getElementById('delDialog').showModal();
 }
 
+function openEditDialog(id) {
+  const log = LOGS.find(l => l.id === id);
+  if (!log) return;
+  pendingEditId = id;
+  document.getElementById('editMemo').value = log.memo || '';
+  document.getElementById('editDialog').showModal();
+}
+
 function renderLogs() {
   const panel = document.getElementById('logsPanel');
   if (!panel) return;
@@ -814,6 +831,7 @@ function renderLogs() {
         <div class="log-mini" hidden>
           <div class="log-mini-chart"></div>
           <div class="log-mini-actions">
+            <button type="button" class="log-edit" data-id="${escapeHtml(log.id)}">✏️ メモを編集</button>
             <button type="button" class="log-del" data-id="${escapeHtml(log.id)}">🗑 記録を削除</button>
           </div>
         </div>
@@ -920,7 +938,19 @@ function setupRecordingUI() {
     pendingDeleteId = null;
     delDlg.close();
   });
+  const editDlg = document.getElementById('editDialog');
+  document.getElementById('editCancel').addEventListener('click', () => editDlg.close());
+  document.getElementById('editSave').addEventListener('click', async () => {
+    if (pendingEditId) {
+      const memo = document.getElementById('editMemo').value.trim();
+      try { await store.update(pendingEditId, { memo }); } catch (e) { alert('保存に失敗しました: ' + e.message); }
+    }
+    pendingEditId = null;
+    editDlg.close();
+  });
   document.getElementById('logsPanel').addEventListener('click', e => {
+    const edit = e.target.closest('.log-edit');
+    if (edit) { e.stopPropagation(); openEditDialog(edit.dataset.id); return; }
     const del = e.target.closest('.log-del');
     if (del) { e.stopPropagation(); openDeleteDialog(del.dataset.id); return; }
     const card = e.target.closest('.log-card');
@@ -961,6 +991,17 @@ load();
   <div class="rec-dialog-actions">
     <button type="button" id="delCancel" class="btn-ghost">キャンセル</button>
     <button type="button" id="delConfirm" class="btn-danger">削除</button>
+  </div>
+</dialog>
+
+<dialog id="editDialog" class="rec-dialog">
+  <h3>メモを編集 ✏️</h3>
+  <label>メモ
+    <textarea id="editMemo" rows="3" placeholder="様子・症状など" autofocus></textarea>
+  </label>
+  <div class="rec-dialog-actions">
+    <button type="button" id="editCancel" class="btn-ghost">キャンセル</button>
+    <button type="button" id="editSave" class="btn-primary">保存</button>
   </div>
 </dialog>
 </body>
