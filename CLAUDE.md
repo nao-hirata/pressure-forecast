@@ -31,6 +31,14 @@ python3 -m http.server 8000
 - **入力 UI** — グラフ下の `#recBar`（「記録」ボタン `#recBtn`）は常時表示。`drawChart` 内 `move()` がグラフのなぞりで `selectedTime` を更新しラベルを「選択中: …」に変える。「記録」ボタンは選択の有無にかかわらず押せ、`openRecordDialog(selectedTime)` が `<dialog id="recDialog">` を開く（日時は編集可、初期値は選択時刻、未選択なら現在時刻）。`drawChartView()` のモード切替時は `selectedTime` をリセットしラベルを未選択案内へ戻す。
 - **一覧と3日ミニグラフ** — `renderLogs()` が `#logsPanel`（`#content` の外なので気圧取得失敗時も生きる）にカードを描画。カードのタップはパネルへのイベント委譲で処理（展開時は先に表示→`drawMiniChart()` の順で、コンテナ幅を確定させてから描く）。カードを開くと `drawMiniChart()` が記録日を含む3カレンダー日（`miniWindow()`、記録日が右端）の静的 SVG（ツールチップなし）を描き、記録時刻に縦マーカーを打つ。**メイングラフと同一縮尺**（`H=320`・横密度 4.6px/h・共通 `yRange`・メインと同じ `pressure-line`/`gridline`/`axis-label`/`day-label` クラス）で描くので低下傾斜を直接見比べられ、カードに収まらない時だけ横スクロール（`.log-mini-chart { overflow-x:auto }`、初期位置は記録日付近へ寄せる）。データは保存済み `series` を優先し、無ければ `ALL` から切り出す（どちらも不可なら「取得範囲外」）。削除はカードを開いた下部の「🗑 記録を削除」から `<dialog id="delDialog">` で確認してから `store.remove()` を実行する。
 
+## バックアップと復元（外部 GAS・任意）
+
+Firestore の体調記録のバックアップ／復元は、**このリポジトリ外の Google Apps Script（GAS）**で運用する。コードはリポジトリに含めない（リポジトリ内を探さないこと）。認証はサービスアカウント（Firestore REST API＋自前 JWT 署名）で、鍵は GAS のスクリプトプロパティ `SA_EMAIL` / `SA_PRIVATE_KEY` に置く（コードに鍵は書かない）。アプリ側（`index.html`）はバックアップ／復元の機能を持たない。
+
+- **バックアップ** — 週次（毎週月曜 6 時台のトリガー）に `cobu_logs` を全件読み出し、スクリプトと同じ Drive フォルダへ `cobu_logs_backup.json` として保存。同名上書きで**最新 1 個だけ**を残す。
+- **復元** — `restoreCobuLogs` を手動実行。その JSON を**元のドキュメント ID のまま** Firestore に書き戻す（REST の `PATCH`＝`setDoc` 相当の全フィールド上書き）。ID 単位の上書きなので**冪等なマージ**（二重登録なし・既存は消えない）。記録は `{ time, memo, pressure, series, createdAt }` と `index.html` と同じスキーマなので、`series` を含めてそのまま復元できる。
+- **IAM ロール** — バックアップ（読み取り）は `Cloud Datastore 閲覧者`、復元（書き込み）は `Cloud Datastore ユーザー` が必要。閲覧者のまま復元すると 403。
+
 ## グラフ実装の要点
 
 - **固定Y軸 + 横スクロール本体の2レイヤー構成**。`#yAxisFixed`（固定 SVG、左端 `padL=48px` 幅、不透明背景で本体を隠す）に目盛りラベル、`#chartScroll` 内の本体 SVG（幅 `W = max(820, n*4.6)`）にグリッド線・折れ線・面・日付境界・低下ハイライトを描く。Y軸ラベルだけが横スクロールに追従しない。
