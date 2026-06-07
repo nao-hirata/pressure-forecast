@@ -229,7 +229,9 @@
   .log-p { font-family: 'Outfit'; font-size: 0.86rem; color: var(--ink-dim); white-space: nowrap; }
   .log-mini { padding: 0 14px 14px; }
   .log-mini[hidden] { display: none; }
-  .log-mini-chart { overflow-x: auto; }
+  .log-mini-chart { position: relative; }
+  .log-mini-scroll { position: relative; overflow-x: auto; -webkit-overflow-scrolling: touch; touch-action: pan-x pan-y; }
+  .log-mini-yaxis { position: absolute; left: 0; top: 0; z-index: 3; width: 48px; height: 320px; pointer-events: none; }
   .log-mini-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 10px; }
   .log-edit {
     background: transparent; color: var(--accent);
@@ -866,6 +868,7 @@ function drawMiniChart(container, centerTimeISO, series) {
     container.innerHTML = '<div class="mini-empty">気圧データを取得中です。</div>'; return;
   }
   const n = vals.length;
+  const unit = ALL ? ALL.unit : 'hPa';
   // メイングラフと同じジオメトリ・縮尺（横密度 4.6px/h、Y範囲は共通 yRange）
   const H = 320, padL = 48, padR = 16, padT = 26, padB = 40;
   const W = Math.round(4.6 * (n - 1)) + padL + padR;
@@ -897,22 +900,103 @@ function drawMiniChart(container, centerTimeISO, series) {
     days += `<line class="gridline" x1="${xx.toFixed(1)}" y1="${padT}" x2="${xx.toFixed(1)}" y2="${padT+plotH}" stroke-dasharray="3,3"/>`;
     days += `<text class="day-label" x="${(xx+4).toFixed(1)}" y="${padT+14}">${d.getMonth()+1}/${d.getDate()}</text>`;
   });
+  // 気圧急降下区間のハイライト（メイングラフと同じ検出・同じ色。窓内の低下を全て対象）
+  let regions = '';
+  for (const dr of detectDrops(times, vals, 0)) {
+    const x1 = x(Math.max(0, dr.startIdx - 6)), x2 = x(dr.endIdx);
+    regions += `<rect x="${x1.toFixed(1)}" y="${padT}" width="${(x2-x1).toFixed(1)}" height="${plotH}" fill="rgba(255,107,107,0.10)"/>`;
+  }
   // 面のグラデはメイングラフと同色。複数カード同時表示でidが衝突しないよう一意id＋ローカルdefs
   const gid = 'gm' + Math.random().toString(36).slice(2);
-  container.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" style="display:block">
-    <defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="rgba(76,201,240,0.25)"/>
-      <stop offset="100%" stop-color="rgba(76,201,240,0)"/>
-    </linearGradient></defs>
-    ${grid}${days}
-    <path d="${area}" fill="url(#${gid})"/>
-    <path class="pressure-line" d="${path}"/>
-    <line class="mini-mark" x1="${mx}" y1="${padT}" x2="${mx}" y2="${padT+plotH}"/>
-    <circle cx="${mx}" cy="${y(vals[best]).toFixed(1)}" r="3.5" fill="var(--warn)"/>
-    ${yl}
-  </svg>`;
+  // メイングラフと同じく固定Y軸（スクロールしない）＋スクロール本体の2レイヤー。
+  // Y軸 SVG は不透明背景（カードと同じ var(--panel-2)）で本体の左端を隠す。
+  container.innerHTML = `<svg class="log-mini-yaxis" viewBox="0 0 ${padL} ${H}" width="${padL}" height="${H}">
+    <rect x="0" y="0" width="${padL}" height="${H}" fill="var(--panel-2)"/>${yl}
+  </svg>
+  <div class="log-mini-scroll">
+    <svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" style="display:block">
+      <defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="rgba(76,201,240,0.25)"/>
+        <stop offset="100%" stop-color="rgba(76,201,240,0)"/>
+      </linearGradient></defs>
+      ${regions}${grid}${days}
+      <path d="${area}" fill="url(#${gid})"/>
+      <path class="pressure-line" d="${path}"/>
+      <line class="mini-mark" x1="${mx}" y1="${padT}" x2="${mx}" y2="${padT+plotH}"/>
+      <circle cx="${mx}" cy="${y(vals[best]).toFixed(1)}" r="3.5" fill="var(--warn)"/>
+      <circle class="hover-dot mini-dot" r="4" style="opacity:0"/>
+      <rect class="mini-hit" x="${padL}" y="${padT}" width="${plotW}" height="${plotH}" fill="transparent"/>
+    </svg>
+    <div class="tooltip mini-tip"></div>
+  </div>`;
   // 記録日付近が初期表示で見えるよう横スクロール位置を寄せる
-  container.scrollLeft = Math.max(0, mx - container.clientWidth / 2);
+  const scroller = container.querySelector('.log-mini-scroll');
+  scroller.scrollLeft = Math.max(0, mx - scroller.clientWidth / 2);
+
+  // メイングラフと同じ長押し/なぞりでの詳細表示。複数カードが同時に開けるよう要素はローカル取得
+  const bodySvg = scroller.querySelector('svg');
+  const hit = scroller.querySelector('.mini-hit');
+  const dot = scroller.querySelector('.mini-dot');
+  const tip = scroller.querySelector('.mini-tip');
+  function move(clientX) {
+    const rect = bodySvg.getBoundingClientRect();
+    const scale = W / rect.width;
+    const px = (clientX - rect.left) * scale;
+    let i = Math.round(((px - padL) / plotW) * (n - 1));
+    i = Math.max(0, Math.min(n - 1, i));
+    const cx = x(i), cy = y(vals[i]);
+    dot.setAttribute('cx', cx); dot.setAttribute('cy', cy); dot.style.opacity = 1;
+    tip.style.opacity = 1;
+    tip.classList.toggle('below', cy < H * 0.30);
+    tip.style.left = (cx / scale) + 'px';
+    tip.style.top = (cy / scale) + 'px';
+    tip.innerHTML = `${fmtTime(times[i])}<br><span class="tp">${vals[i].toFixed(1)} ${unit}</span>`;
+  }
+  let touchUsed = false; // タッチ後に発火する合成マウスイベントを無視するため
+  hit.addEventListener('mousemove', e => { if (touchUsed) return; move(e.clientX); });
+  hit.addEventListener('mouseleave', () => { if (touchUsed) return; dot.style.opacity = 0; tip.style.opacity = 0; });
+  // タッチ: 非表示時は長押しで読み取り開始。表示中はなぞって時刻変更、タップで非表示
+  let startX = 0, startY = 0, reading = false, moved = false, visible = false, wasVisible = false, pressTimer = null, hideTimer = null;
+  function hideTip() { reading = false; visible = false; clearTimeout(hideTimer); dot.style.opacity = 0; tip.style.opacity = 0; }
+  hit.addEventListener('touchstart', e => {
+    touchUsed = true;
+    startX = e.touches[0].clientX;
+    startY = e.touches[0].clientY;
+    moved = false;
+    wasVisible = visible;
+    clearTimeout(hideTimer);
+    clearTimeout(pressTimer);
+    if (visible) {
+      reading = true; // 表示中は長押し不要で即なぞり読み取り
+    } else {
+      const cx = e.touches[0].clientX;
+      pressTimer = setTimeout(() => { reading = true; visible = true; move(cx); }, 350);
+    }
+  }, {passive:true});
+  hit.addEventListener('touchmove', e => {
+    const dx = Math.abs(e.touches[0].clientX - startX);
+    const dy = Math.abs(e.touches[0].clientY - startY);
+    if (dx > 8 || dy > 8) moved = true;
+    // 読み取り中は値を更新（このときだけスクロールを止める）
+    if (reading) {
+      move(e.touches[0].clientX);
+      visible = true;
+      e.preventDefault();
+      return;
+    }
+    // 長押し成立前に動いた → スクロール意図。長押しを中止しブラウザに任せる
+    if (moved) clearTimeout(pressTimer);
+  }, {passive:false});
+  hit.addEventListener('touchend', () => {
+    clearTimeout(pressTimer);
+    // 表示中に動かさずタップ → 非表示
+    if (wasVisible && !moved) { hideTip(); return; }
+    // なぞって読み取った → 表示を残し一定時間後に消す
+    if (reading) {
+      reading = false;
+      hideTimer = setTimeout(() => { dot.style.opacity = 0; tip.style.opacity = 0; visible = false; }, 3000);
+    }
+  }, {passive:true});
 }
 
 function setupRecordingUI() {
