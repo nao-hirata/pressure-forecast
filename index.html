@@ -227,12 +227,22 @@
   .log-memo { font-size: 0.84rem; color: var(--ink-dim); margin-top: 4px; white-space: pre-wrap; word-break: break-word; }
   .log-side { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
   .log-p { font-family: 'Outfit'; font-size: 0.86rem; color: var(--ink-dim); white-space: nowrap; }
+  .log-caret { color: var(--ink-dim); font-size: 0.7rem; line-height: 1; transition: transform 0.15s; }
+  .log-card.open .log-caret { transform: rotate(180deg); }
   .log-mini { padding: 0 14px 14px; }
   .log-mini[hidden] { display: none; }
   .log-mini-chart { position: relative; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
   .log-mini-scroll { position: relative; overflow-x: auto; -webkit-overflow-scrolling: touch; touch-action: pan-x pan-y; }
   .log-mini-yaxis { position: absolute; left: 0; top: 0; z-index: 3; width: 48px; height: 320px; pointer-events: none; }
-  .log-mini-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 10px; }
+  .log-mini-actions { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 10px; }
+  .log-mini-actions-right { display: flex; gap: 10px; }
+  .log-close {
+    background: transparent; color: var(--ink-dim);
+    border: 1px solid var(--line); border-radius: 8px;
+    font-family: 'Noto Sans JP', sans-serif; font-size: 0.78rem; font-weight: 600;
+    padding: 6px 14px; cursor: pointer;
+  }
+  .log-close:active { background: var(--panel); }
   .log-edit {
     background: transparent; color: var(--accent);
     border: 1px solid rgba(76,201,240,0.4); border-radius: 8px;
@@ -932,13 +942,17 @@ function renderLogs() {
           </div>
           <div class="log-side">
             <span class="log-p">${p}</span>
+            <span class="log-caret" aria-hidden="true">▾</span>
           </div>
         </div>
         <div class="log-mini" hidden>
           <div class="log-mini-chart"></div>
           <div class="log-mini-actions">
-            <button type="button" class="log-edit" data-id="${escapeHtml(log.id)}">✏️ 編集</button>
-            <button type="button" class="log-del" data-id="${escapeHtml(log.id)}">🗑 記録を削除</button>
+            <button type="button" class="log-close">▲ 閉じる</button>
+            <div class="log-mini-actions-right">
+              <button type="button" class="log-edit" data-id="${escapeHtml(log.id)}">✏️ 編集</button>
+              <button type="button" class="log-del" data-id="${escapeHtml(log.id)}">🗑 記録を削除</button>
+            </div>
           </div>
         </div>
       </div>`;
@@ -1159,14 +1173,26 @@ function setupRecordingUI() {
     if (edit) { e.stopPropagation(); openEditDialog(edit.dataset.id); return; }
     const del = e.target.closest('.log-del');
     if (del) { e.stopPropagation(); openDeleteDialog(del.dataset.id); return; }
-    const card = e.target.closest('.log-card');
-    if (card) {
+    const closeBtn = e.target.closest('.log-close');
+    if (closeBtn) {
+      const card = closeBtn.closest('.log-card');
+      card.querySelector('.log-mini').hidden = true;
+      card.classList.remove('open');
+      return;
+    }
+    const head = e.target.closest('.log-head');
+    if (head) {
+      const card = head.closest('.log-card');
       const mini = card.querySelector('.log-mini');
       if (mini.hidden) {
         const log = LOGS.find(l => l.id === card.dataset.id);
         mini.hidden = false;
+        card.classList.add('open');
         drawMiniChart(mini.querySelector('.log-mini-chart'), card.dataset.time, log && log.series);
-      } else { mini.hidden = true; }
+      } else {
+        mini.hidden = true;
+        card.classList.remove('open');
+      }
     }
   });
 }
