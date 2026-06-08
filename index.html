@@ -277,6 +277,28 @@
   .btn-primary { background: var(--accent); color: var(--bg); border: none; }
   .btn-danger { background: var(--warn); color: var(--bg); border: none; }
   .del-text { font-size: 0.9rem; color: var(--ink); margin-bottom: 16px; }
+
+  /* 体調記録: ラベル */
+  .rec-field { margin-bottom: 12px; }
+  .field-cap { display: block; font-size: 0.78rem; color: var(--ink-dim); margin-bottom: 6px; }
+  .label-picker { display: flex; gap: 8px; flex-wrap: wrap; }
+  .label-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 7px 12px; border: 1px solid var(--line); border-radius: 999px;
+    font-size: 0.82rem; color: var(--ink-dim); cursor: pointer;
+    -webkit-user-select: none; user-select: none;
+  }
+  .label-chip .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--chip); flex-shrink: 0; }
+  .label-chip input { display: none; }
+  .label-chip.selected { border-color: var(--chip); color: var(--ink); background: rgba(255,255,255,0.04); }
+  .log-filter { display: inline-flex; gap: 6px; align-items: center; }
+  .filter-dot {
+    background: transparent; border: 1px solid transparent; border-radius: 50%;
+    padding: 3px; cursor: pointer; line-height: 0;
+  }
+  .filter-dot .dot { display: block; width: 14px; height: 14px; border-radius: 50%; background: var(--chip); opacity: 0.45; }
+  .filter-dot.active { border-color: var(--chip); }
+  .filter-dot.active .dot { opacity: 1; }
 </style>
 </head>
 <body>
@@ -317,6 +339,14 @@ const firebaseConfig = {
 
 // App Check（reCAPTCHA v3）のサイトキー。未設定（YOUR_...）なら App Check は無効のまま
 const RECAPTCHA_SITE_KEY = "6Lfl6wstAAAAAFT0_XkQFPtx1w3WbUaJ5yad3YNY";
+
+// 体調記録のラベル（色付き）。日常は label を空にして表すのでここには含めない
+const LABELS = [
+  { id: 'seizure',  name: '発作', color: '#ff6b6b' },
+  { id: 'medicine', name: '薬',   color: '#4cc9f0' },
+];
+const DAILY = { id: '', name: '日常', color: 'var(--ink-dim)' };
+const labelById = id => LABELS.find(l => l.id === id) || null;
 
 const LAT = 35.68, LON = 139.69;
 // 日本最適化の JMA（GSM+MSM）を優先し、ダメなら best_match→GFS の順にフォールバックする
@@ -686,9 +716,25 @@ function drawChart(times, vals, unit, drops, curIdx, showNow) {
 }
 
 // ===== 体調記録 =====
-let selectedTime = null, LOGS = [], store = null, pendingDeleteId = null, pendingEditId = null;
+let selectedTime = null, LOGS = [], store = null, pendingDeleteId = null, pendingEditId = null, activeFilters = new Set();
 
 const escapeHtml = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+// ラベル選択チップ（登録/編集ダイアログ共通）。日常を先頭に LABELS を並べる
+const pickerOptions = () => [DAILY, ...LABELS];
+function renderLabelPicker(container, groupName, selectedId) {
+  container.innerHTML = pickerOptions().map(o => `
+    <label class="label-chip${o.id === selectedId ? ' selected' : ''}" style="--chip:${o.color}">
+      <input type="radio" name="${groupName}" value="${o.id}"${o.id === selectedId ? ' checked' : ''}>
+      <span class="dot"></span>${o.name}
+    </label>`).join('');
+  container.onchange = () => container.querySelectorAll('.label-chip').forEach(c =>
+    c.classList.toggle('selected', c.querySelector('input').checked));
+}
+const selectedLabel = groupName => {
+  const el = document.querySelector(`input[name="${groupName}"]:checked`);
+  return el ? el.value : '';
+};
 const firebaseEnabled = () => !!(firebaseConfig && firebaseConfig.projectId && !firebaseConfig.projectId.includes('YOUR_'));
 
 // localStorage フォールバック（Firebase 未設定時。この端末内のみ・同期なし）
@@ -790,6 +836,7 @@ function openRecordDialog(timeISO) {
   const base = timeISO ? new Date(timeISO) : new Date();
   document.getElementById('recDateTime').value = toInputValue(base);
   document.getElementById('recMemo').value = '';
+  renderLabelPicker(document.getElementById('recLabelPicker'), 'recLabel', '');
   document.getElementById('recDialog').showModal();
 }
 
@@ -803,24 +850,38 @@ function openEditDialog(id) {
   if (!log) return;
   pendingEditId = id;
   document.getElementById('editMemo').value = log.memo || '';
+  renderLabelPicker(document.getElementById('editLabelPicker'), 'editLabel', log.label || '');
   document.getElementById('editDialog').showModal();
+}
+
+// 一覧ヘッダ右のラベル絞り込み（色丸）。色付きラベル→日常の順。複数選択可（OR）
+function filterBarHtml() {
+  return '<span class="log-filter">' + [...LABELS, DAILY].map(o =>
+    `<button type="button" class="filter-dot${activeFilters.has(o.id) ? ' active' : ''}" data-filter="${o.id}" title="${o.name}" style="--chip:${o.color}"><span class="dot"></span></button>`
+  ).join('') + '</span>';
 }
 
 function renderLogs() {
   const panel = document.getElementById('logsPanel');
   if (!panel) return;
   const unit = ALL ? ALL.unit : 'hPa';
-  let html = `<h2>記録一覧</h2>`;
+  let html = `<h2>記録一覧 ${LOGS.length ? filterBarHtml() : ''}</h2>`;
   if (store && !store.synced) {
     html += `<div class="logs-note">この端末内のみ保存中です。複数端末で共有するには Firebase を設定してください（README 参照）。</div>`;
   }
+  const list = (activeFilters.size === 0 ? [...LOGS] : LOGS.filter(l => activeFilters.has(l.label || '')))
+    .sort((a, b) => new Date(b.time) - new Date(a.time));
   if (!LOGS.length) {
     html += `<div class="logs-empty">まだ記録はありません。グラフで時刻を選んで下の「記録」ボタンから登録できます。</div>`;
+  } else if (!list.length) {
+    html += `<div class="logs-empty">選択中のラベルに一致する記録はありません。</div>`;
   } else {
     html += '<div class="log-list">';
-    for (const log of LOGS) {
+    for (const log of list) {
       const p = (log.pressure != null) ? `${Number(log.pressure).toFixed(1)} ${unit}` : '—';
-      html += `<div class="log-card" data-id="${escapeHtml(log.id)}" data-time="${escapeHtml(log.time)}">
+      const lab = labelById(log.label);
+      const bandStyle = lab ? ` style="border-left:3px solid ${lab.color}"` : '';
+      html += `<div class="log-card"${bandStyle} data-id="${escapeHtml(log.id)}" data-time="${escapeHtml(log.time)}">
         <div class="log-head">
           <div class="log-main">
             <div class="log-time">${fmtTime(log.time)}</div>
@@ -833,7 +894,7 @@ function renderLogs() {
         <div class="log-mini" hidden>
           <div class="log-mini-chart"></div>
           <div class="log-mini-actions">
-            <button type="button" class="log-edit" data-id="${escapeHtml(log.id)}">✏️ メモを編集</button>
+            <button type="button" class="log-edit" data-id="${escapeHtml(log.id)}">✏️ 編集</button>
             <button type="button" class="log-del" data-id="${escapeHtml(log.id)}">🗑 記録を削除</button>
           </div>
         </div>
@@ -1006,8 +1067,9 @@ function setupRecordingUI() {
     const time = document.getElementById('recDateTime').value;
     if (!time) return;
     const memo = document.getElementById('recMemo').value.trim();
+    const label = selectedLabel('recLabel');
     try {
-      await store.add({ time, memo, pressure: nearestPressure(time), series: snapshotSeries(time), createdAt: Date.now() });
+      await store.add({ time, memo, label, pressure: nearestPressure(time), series: snapshotSeries(time), createdAt: Date.now() });
       dlg.close();
     } catch (e) {
       alert('保存に失敗しました: ' + e.message);
@@ -1027,12 +1089,15 @@ function setupRecordingUI() {
   document.getElementById('editSave').addEventListener('click', async () => {
     if (pendingEditId) {
       const memo = document.getElementById('editMemo').value.trim();
-      try { await store.update(pendingEditId, { memo }); } catch (e) { alert('保存に失敗しました: ' + e.message); }
+      const label = selectedLabel('editLabel');
+      try { await store.update(pendingEditId, { memo, label }); } catch (e) { alert('保存に失敗しました: ' + e.message); }
     }
     pendingEditId = null;
     editDlg.close();
   });
   document.getElementById('logsPanel').addEventListener('click', e => {
+    const fdot = e.target.closest('.filter-dot');
+    if (fdot) { const f = fdot.dataset.filter; activeFilters.has(f) ? activeFilters.delete(f) : activeFilters.add(f); renderLogs(); return; }
     const edit = e.target.closest('.log-edit');
     if (edit) { e.stopPropagation(); openEditDialog(edit.dataset.id); return; }
     const del = e.target.closest('.log-del');
@@ -1060,6 +1125,9 @@ load();
   <label>日時
     <input type="datetime-local" id="recDateTime">
   </label>
+  <div class="rec-field"><span class="field-cap">ラベル</span>
+    <div class="label-picker" id="recLabelPicker"></div>
+  </div>
   <label>メモ（任意）
     <textarea id="recMemo" rows="3" placeholder="様子・症状など"></textarea>
   </label>
@@ -1079,9 +1147,12 @@ load();
 </dialog>
 
 <dialog id="editDialog" class="rec-dialog">
-  <h3>メモを編集 ✏️</h3>
+  <h3>記録を編集 ✏️</h3>
+  <div class="rec-field"><span class="field-cap">ラベル</span>
+    <div class="label-picker" id="editLabelPicker"></div>
+  </div>
   <label>メモ
-    <textarea id="editMemo" rows="3" placeholder="様子・症状など" autofocus></textarea>
+    <textarea id="editMemo" rows="3" placeholder="様子・症状など"></textarea>
   </label>
   <div class="rec-dialog-actions">
     <button type="button" id="editCancel" class="btn-ghost">キャンセル</button>
