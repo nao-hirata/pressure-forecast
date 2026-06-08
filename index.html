@@ -789,16 +789,16 @@ async function initStore() {
 }
 
 // 記録時刻に最も近い実測/予報気圧を1点だけ取り出す（取得範囲外なら null）
-function nearestPressure(timeISO) {
-  if (!ALL) return null;
+function nearestPressure(timeISO, src = ALL) {
+  if (!src) return null;
   const t = new Date(timeISO).getTime();
   let best = -1, bestDiff = Infinity;
-  for (let i = 0; i < ALL.times.length; i++) {
-    const d = Math.abs(new Date(ALL.times[i]).getTime() - t);
+  for (let i = 0; i < src.times.length; i++) {
+    const d = Math.abs(new Date(src.times[i]).getTime() - t);
     if (d < bestDiff) { bestDiff = d; best = i; }
   }
   if (best < 0 || bestDiff > 3600 * 1000) return null;
-  return ALL.vals[best];
+  return src.vals[best];
 }
 
 // 記録時刻の前後1.5日（ミニグラフ用）の気圧を記録に埋め込む。後日データ範囲外になっても復元できる。
@@ -810,20 +810,53 @@ function miniWindow(centerMs) {
   return { lo: day0 - 2 * 86400e3, hi: day0 + 86400e3 };
 }
 
-function snapshotSeries(timeISO) {
-  if (!ALL) return null;
+function snapshotSeries(timeISO, src = ALL) {
+  if (!src) return null;
   const { lo, hi } = miniWindow(new Date(timeISO).getTime());
   let start = null;
   const vals = [];
-  for (let i = 0; i < ALL.times.length; i++) {
-    const tm = new Date(ALL.times[i]).getTime();
+  for (let i = 0; i < src.times.length; i++) {
+    const tm = new Date(src.times[i]).getTime();
     if (tm >= lo && tm < hi) {
-      if (start === null) start = ALL.times[i];
-      vals.push(ALL.vals[i]);
+      if (start === null) start = src.times[i];
+      vals.push(src.vals[i]);
     }
   }
   if (vals.length < 2) return null;
   return { start, vals };
+}
+
+const toDateStr = d => { const p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`; };
+
+// 7日より前の記録用。登録日から2日前〜当日（miniWindow をちょうど覆う3カレンダー日）を
+// Historical Weather API（archive-api）から取得する。形は ALL と同じ { times, vals, unit }。
+async function fetchHistorySeries(timeISO) {
+  const day = new Date(timeISO); day.setHours(0, 0, 0, 0);
+  const startDate = toDateStr(new Date(day.getTime() - 2 * 86400e3));
+  let endDate = toDateStr(day);
+  const todayStr = toDateStr(new Date());
+  if (endDate > todayStr) endDate = todayStr;
+  const url = `https://archive-api.open-meteo.com/v1/archive?latitude=${LAT}&longitude=${LON}`
+    + `&hourly=pressure_msl&timezone=Asia%2FTokyo&start_date=${startDate}&end_date=${endDate}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+  const data = await res.json();
+  const t = (data.hourly && data.hourly.time) || [];
+  const v = (data.hourly && data.hourly.pressure_msl) || [];
+  const times = [], vals = [];
+  for (let i = 0; i < t.length; i++) if (Number.isFinite(v[i])) { times.push(t[i]); vals.push(v[i]); }
+  if (vals.length < 2) return null;
+  return { times, vals, unit: (data.hourly_units && data.hourly_units.pressure_msl) || 'hPa' };
+}
+
+// ALL（Forecast）と archive をマージ。重複時刻は ALL を優先し、不足する過去側だけ archive で補う。
+function mergeSources(base, extra) {
+  const map = new Map();
+  if (extra) for (let i = 0; i < extra.times.length; i++) map.set(extra.times[i], extra.vals[i]);
+  if (base) for (let i = 0; i < base.times.length; i++) map.set(base.times[i], base.vals[i]);
+  const times = [...map.keys()].sort();
+  const vals = times.map(t => map.get(t));
+  return { times, vals, unit: (base && base.unit) || (extra && extra.unit) || 'hPa' };
 }
 
 // datetime-local 入力用の "YYYY-MM-DDTHH:mm"（ローカル壁時計）
@@ -1068,11 +1101,25 @@ function setupRecordingUI() {
     if (!time) return;
     const memo = document.getElementById('recMemo').value.trim();
     const label = selectedLabel('recLabel');
+    const btn = document.getElementById('recSave');
+    const orig = btn.textContent; btn.disabled = true;
     try {
-      await store.add({ time, memo, label, pressure: nearestPressure(time), series: snapshotSeries(time), createdAt: Date.now() });
+      let src = ALL;
+      const t = new Date(time).getTime();
+      const { lo } = miniWindow(t);
+      const allStart = ALL ? new Date(ALL.times[0]).getTime() : Infinity;
+      if (lo < allStart && t < Date.now()) {
+        // 3日窓が ALL の取得範囲（≒直近7日）の先頭に食い込む過去記録は archive で補う
+        btn.textContent = '気圧データ取得中…';
+        try { const hist = await fetchHistorySeries(time); if (hist) src = mergeSources(ALL, hist); }
+        catch (e) { console.error('Historical API 取得失敗:', e); }
+      }
+      await store.add({ time, memo, label, pressure: nearestPressure(time, src), series: snapshotSeries(time, src), createdAt: Date.now() });
       dlg.close();
     } catch (e) {
       alert('保存に失敗しました: ' + e.message);
+    } finally {
+      btn.disabled = false; btn.textContent = orig;
     }
   });
   const delDlg = document.getElementById('delDialog');
